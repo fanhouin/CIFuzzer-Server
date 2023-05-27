@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -16,7 +17,10 @@ func errReturn(c *gin.Context, err error) {
 	})
 }
 
-func makeFile(ctx context.Context, c *gin.Context) error {
+func makeFile(ctx context.Context, c *gin.Context, workDir string) error {
+	gccEnv := "CC=" + workDir + "/AFLplusplus/afl-gcc"
+	AsanEnv := "AFL_USE_ASAN=1"
+
 	cmd := exec.CommandContext(ctx, "make", "clean")
 	output, err := cmd.CombinedOutput()
 	log.Println(string(output))
@@ -25,6 +29,9 @@ func makeFile(ctx context.Context, c *gin.Context) error {
 	}
 
 	cmd = exec.CommandContext(ctx, "make")
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, gccEnv, AsanEnv)
+
 	output, err = cmd.CombinedOutput()
 	log.Println(string(output))
 	if err != nil {
@@ -33,31 +40,26 @@ func makeFile(ctx context.Context, c *gin.Context) error {
 	return nil
 }
 
-func RunFuzzer(apiGroup *gin.RouterGroup) {
+func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 	apiGroup.POST("/runAFLPlusPlus", func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 
-		currDir, err := os.Getwd()
-		if err != nil {
-			errReturn(c, err)
-			return
-		}
-		err = os.Chdir(currDir + "/target/vul")
+		err := os.Chdir(workDir + "/target/vuln1")
 		if err != nil {
 			errReturn(c, err)
 			return
 		}
 
 		// MakeFile
-		err = makeFile(ctx, c)
+		err = makeFile(ctx, c, workDir)
 		if err != nil {
 			errReturn(c, err)
 			return
 		}
 
 		// Run File
-		cmd := exec.CommandContext(ctx, "./build/vul")
+		cmd := exec.CommandContext(ctx, "./build/vuln1")
 		// cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 
@@ -83,6 +85,7 @@ func RunFuzzer(apiGroup *gin.RouterGroup) {
 			}
 		case err = <-finish:
 			if err != nil {
+				fmt.Println("exec fail")
 				errReturn(c, err)
 				return
 			}
@@ -94,6 +97,25 @@ func RunFuzzer(apiGroup *gin.RouterGroup) {
 
 		c.JSON(200, gin.H{
 			"message": "runFuzzer",
+		})
+	})
+
+	apiGroup.GET("/gotcpu", func(c *gin.Context) {
+		err := os.Chdir(workDir + "/AFLplusplus")
+		if err != nil {
+			errReturn(c, err)
+			return
+		}
+
+		cmd := exec.Command("afl-gotcpu")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			errReturn(c, err)
+			return
+		}
+		fmt.Println(string(output))
+		c.JSON(200, gin.H{
+			"message": "OK",
 		})
 	})
 }

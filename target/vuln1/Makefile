@@ -1,13 +1,12 @@
-CC = gcc
-CFLAGS = -Wall  -g
+CC ?= gcc
+CFLAGS = -Wall -g
 BUILD_DIR = build
 SRC_DIR = src
 
 SRCS = $(wildcard $(SRC_DIR)/*.c)
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 
-
-EXECUTABLE = $(BUILD_DIR)/vul
+EXECUTABLE = $(BUILD_DIR)/vuln1
 
 all: $(EXECUTABLE)
 

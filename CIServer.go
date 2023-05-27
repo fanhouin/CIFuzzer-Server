@@ -1,6 +1,8 @@
 package main
 
 import (
+	"log"
+	"os"
 	"web-server/routes"
 
 	"github.com/gin-gonic/gin"
@@ -10,7 +12,12 @@ func main() {
 	r := gin.Default()
 
 	apiGroup := r.Group("/api")
-	routes.RunFuzzer(apiGroup)
+	workDir, err := os.Getwd()
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+	routes.RunFuzzer(apiGroup, workDir)
 
 	r.Run(":8080")
 }
