@@ -1,0 +1,8 @@
+version: "1"
+services:
+  ci_fuzzer:
+    image: ci_fuzzer:latest
+    volumes:
+      - ./target:/app/target
+    ports:
+      - "8080:8080"

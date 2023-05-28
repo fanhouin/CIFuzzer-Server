@@ -2,7 +2,6 @@ package routes
 
 import (
 	"context"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -14,9 +13,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func errReturn(c *gin.Context, err error) {
-	c.JSON(500, gin.H{
-		"message": err,
+func errReturn(c *gin.Context, err error, errMsg string) {
+	log.Println(err)
+	c.JSON(http.StatusInternalServerError, gin.H{
+		"message": errMsg,
 	})
 }
 
@@ -123,6 +123,25 @@ func checkCrash(targetDir, currentTime string) bool {
 	return false
 }
 
+func runFuzzer(targetDir, targetName, currentTime, AFLDir, avCpu string, cmd **exec.Cmd, ctx *context.Context, finish chan error) error {
+	inputDir := targetDir + "/test/" + currentTime + "/in"
+	outputDir := targetDir + "/test/" + currentTime + "/out"
+	execDir := targetDir + "/test/" + currentTime + "/" + targetName
+	*cmd = exec.CommandContext(*ctx, AFLDir+"/afl-fuzz", "-i", inputDir, "-o", outputDir,
+		"-b", avCpu, "-m", "none", "--", execDir, "@@")
+	(*cmd).Stdout = os.Stdout
+	err := (*cmd).Start()
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		finish <- (*cmd).Wait()
+	}()
+
+	return nil
+}
+
 func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 	apiGroup.POST("/runAFLPlusPlus", func(c *gin.Context) {
 		targetName := c.PostForm("target")
@@ -149,14 +168,14 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 		// Set target dir
 		err := os.Chdir(targetDir)
 		if err != nil {
-			errReturn(c, err)
+			errReturn(c, err, "change dir error")
 			return
 		}
 
 		// MakeFile
 		err = makeFile(AFLDir)
 		if err != nil {
-			errReturn(c, err)
+			errReturn(c, err, "makefile error")
 			return
 		}
 
@@ -164,14 +183,14 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 		currentTime := time.Now().Format("20060102_150405")
 		err = createTestDir(targetDir, targetName, currentTime)
 		if err != nil {
-			errReturn(c, err)
+			errReturn(c, err, "create test dir error")
 			return
 		}
 
 		// Get available cpu
 		avCpu, err := getAvailableCpu(AFLDir)
 		if err != nil {
-			errReturn(c, err)
+			errReturn(c, err, "get available cpu error")
 			return
 		}
 		if avCpu == "-1" {
@@ -181,22 +200,14 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 			return
 		}
 
-		inputDir := targetDir + "/test/" + currentTime + "/in"
-		outputDir := targetDir + "/test/" + currentTime + "/out"
-		execDir := targetDir + "/test/" + currentTime + "/" + targetName
-		cmd := exec.CommandContext(ctx, AFLDir+"/afl-fuzz", "-i", inputDir, "-o", outputDir,
-			"-b", avCpu, "-m", "none", "--", execDir, "@@")
-		cmd.Stdout = os.Stdout
-		err = cmd.Start()
+		// Run fuzzer
+		var cmd *exec.Cmd
+		finish := make(chan error, 1)
+		err = runFuzzer(targetDir, targetName, currentTime, AFLDir, avCpu, &cmd, &ctx, finish)
 		if err != nil {
-			errReturn(c, err)
+			errReturn(c, err, "run fuzzer error")
 			return
 		}
-
-		finish := make(chan error, 1)
-		go func() {
-			finish <- cmd.Wait()
-		}()
 
 		select {
 		// Timeout(3mins)
@@ -218,8 +229,7 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 		// Finish the process
 		case err = <-finish:
 			if err != nil {
-				fmt.Println("exec fail")
-				errReturn(c, err)
+				errReturn(c, err, "exec target fail")
 				return
 			}
 			c.JSON(200, gin.H{
@@ -237,14 +247,14 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 	apiGroup.GET("/gotcpu", func(c *gin.Context) {
 		err := os.Chdir(workDir + "/AFLplusplus")
 		if err != nil {
-			errReturn(c, err)
+			errReturn(c, err, "change dir error")
 			return
 		}
 
 		cmd := exec.Command("afl-gotcpu")
 		output, err := cmd.CombinedOutput()
 		if err != nil {
-			errReturn(c, err)
+			errReturn(c, err, "exec afl-gotcpu fail")
 			return
 		}
 
