@@ -145,7 +145,7 @@ func runFuzzer(targetDir, targetName, currentTime, AFLDir, avCpu string, cmd **e
 func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 	apiGroup.POST("/runAFLPlusPlus", func(c *gin.Context) {
 		targetName := c.PostForm("target")
-		if targetName == "" {
+		if len(targetName) == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"message": "target is empty",
 			})
@@ -162,7 +162,7 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 
 		// Set 3 min timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		// ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		// Set target dir
