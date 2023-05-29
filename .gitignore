@@ -20,7 +20,9 @@
 # Go workspace file
 go.work
 AFLplusplus/
-target/*/build
-target/*/test
-target/*/in
-target/*/out
+c_program/
+target/
+# target/*/build
+# target/*/test
+# target/*/in
+# target/*/out

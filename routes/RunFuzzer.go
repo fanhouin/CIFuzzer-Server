@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"encoding/base64"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -20,18 +21,45 @@ func errReturn(c *gin.Context, err error, errMsg string) {
 	})
 }
 
-func makeFile(AFLDir string) error {
+func setUpTargetDir(workDir, targetDir, targetName string, decodeContent []byte) error {
+	os.MkdirAll(targetDir, 0777)
+	os.MkdirAll(targetDir+"/src", 0777)
+	os.MkdirAll(targetDir+"/build", 0777)
+	os.MkdirAll(targetDir+"/test", 0777)
+
+	// Write c code
+	file, err := os.Create(targetDir + "/src/" + targetName + ".c")
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.Write(decodeContent)
+	if err != nil {
+		return err
+	}
+
+	// Copy Makefile
+	cmd := exec.Command("cp", workDir+"/make/Makefile", targetDir+"/Makefile")
+	err = cmd.Run()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func makeFile(AFLDir, targetDir, targetName string) error {
 	gccEnv := "CC=" + AFLDir + "/afl-gcc"
 	AsanEnv := "AFL_USE_ASAN=1"
 
-	cmd := exec.Command("make", "clean")
+	cmd := exec.Command("make", "-C", targetDir, "clean")
 	output, err := cmd.CombinedOutput()
 	log.Println(string(output))
 	if err != nil {
 		return err
 	}
 
-	cmd = exec.Command("make")
+	cmd = exec.Command("make", "-C", targetDir, "target="+targetName)
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, gccEnv, AsanEnv)
 
@@ -45,7 +73,6 @@ func makeFile(AFLDir string) error {
 
 func createTestDir(targetDir, targetName, currentTime string) error {
 	testDir := targetDir + "/test/"
-	os.MkdirAll(testDir, 0777)
 	os.MkdirAll(testDir+"/"+currentTime, 0777)
 	os.MkdirAll(testDir+"/"+currentTime+"/in", 0777)
 	os.MkdirAll(testDir+"/"+currentTime+"/out", 0777)
@@ -142,38 +169,51 @@ func runFuzzer(targetDir, targetName, currentTime, AFLDir, avCpu string, cmd **e
 	return nil
 }
 
+type RunAFLFormData struct {
+	CCode      string `json:"c_code" form:"c_code" binding:"required"`
+	TargetName string `json:"target_name" form:"target_name" binding:"required"`
+}
+
 func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 	apiGroup.POST("/runAFLPlusPlus", func(c *gin.Context) {
-		targetName := c.PostForm("target")
-		if len(targetName) == 0 {
+		formData := &RunAFLFormData{}
+		if err := c.ShouldBind(formData); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"message": "target is empty",
+				"message": err.Error(),
 			})
 			return
 		}
-		AFLDir := workDir + "/AFLplusplus"
+		encodeContent := formData.CCode
+		if len(encodeContent) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": "c_code is empty",
+			})
+			return
+		}
+		decodedContent, err := base64.StdEncoding.DecodeString(encodeContent)
+		if err != nil {
+			errReturn(c, err, "decode c_code error")
+			return
+		}
+		targetName := formData.TargetName
 		targetDir := workDir + "/target/" + targetName
-		if _, err := os.Stat(targetDir); os.IsNotExist(err) {
-			c.JSON(http.StatusNotFound, gin.H{
-				"message": "target not found",
-			})
-			return
-		}
+		AFLDir := workDir + "/AFLplusplus"
+		setUpTargetDir(workDir, targetDir, targetName, decodedContent)
 
 		// Set 3 min timeout
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		// ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 
 		// Set target dir
-		err := os.Chdir(targetDir)
-		if err != nil {
-			errReturn(c, err, "change dir error")
-			return
-		}
+		// err = os.Chdir(targetDir)
+		// if err != nil {
+		// 	errReturn(c, err, "change dir error")
+		// 	return
+		// }
 
 		// MakeFile
-		err = makeFile(AFLDir)
+		err = makeFile(AFLDir, targetDir, targetName)
 		if err != nil {
 			errReturn(c, err, "makefile error")
 			return
@@ -216,12 +256,12 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 				cmd.Process.Kill()
 				if checkCrash(targetDir, currentTime) {
 					c.JSON(200, gin.H{
-						"message": "Crash Found",
+						"message": targetName + ".c : Crash Found",
 					})
 					return
 				}
 				c.JSON(200, gin.H{
-					"message": "Crash Not Found",
+					"message": targetName + ".c : Crash Not Found",
 					// "message": "After 3 Minutes, kill the process",
 				})
 				return
@@ -250,8 +290,9 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 			errReturn(c, err, "change dir error")
 			return
 		}
+		log.Println(workDir)
 
-		cmd := exec.Command("afl-gotcpu")
+		cmd := exec.Command("./afl-gotcpu")
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			errReturn(c, err, "exec afl-gotcpu fail")

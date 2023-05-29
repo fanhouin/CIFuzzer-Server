@@ -6,7 +6,7 @@ SRC_DIR = src
 SRCS = $(wildcard $(SRC_DIR)/*.c)
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 
-EXECUTABLE = $(BUILD_DIR)/readfile
+EXECUTABLE = $(BUILD_DIR)/${target}
 
 all: create_build_dir $(EXECUTABLE)
 

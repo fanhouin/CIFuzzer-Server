@@ -15,6 +15,8 @@ func SetupRouter() *gin.Engine {
 	if err != nil {
 		log.Fatal(err)
 	}
+	os.MkdirAll(workDir+"/target", 0777)
+
 	apiGroup := r.Group("/api")
 	routes.RunFuzzer(apiGroup, workDir)
 
