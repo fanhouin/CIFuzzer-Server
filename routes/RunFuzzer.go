@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -49,8 +50,7 @@ func makeFile(AFLDir, targetDir, targetName string) error {
 	AsanEnv := "AFL_USE_ASAN=1"
 
 	cmd := exec.Command("make", "-C", targetDir, "clean")
-	output, err := cmd.CombinedOutput()
-	log.Println(string(output))
+	err := cmd.Run()
 	if err != nil {
 		return err
 	}
@@ -59,8 +59,7 @@ func makeFile(AFLDir, targetDir, targetName string) error {
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, gccEnv, AsanEnv)
 
-	output, err = cmd.CombinedOutput()
-	log.Println(string(output))
+	err = cmd.Run()
 	if err != nil {
 		return err
 	}
@@ -146,22 +145,30 @@ func checkCrash(targetDir, currentTime string) bool {
 	return false
 }
 
-func runFuzzer(targetDir, targetName, currentTime, AFLDir, avCpu string, cmd **exec.Cmd, ctx *context.Context, finish chan error) error {
+func runFuzzer(targetDir, targetName, currentTime, AFLDir, avCpu string) error {
 	inputDir := filepath.Join(targetDir, "test", currentTime, "in")
 	outputDir := filepath.Join(targetDir, "test", currentTime, "out")
 	execDir := filepath.Join(targetDir, "test", currentTime, targetName)
 
-	*cmd = exec.CommandContext(*ctx, AFLDir+"/afl-fuzz", "-i", inputDir, "-o", outputDir,
-		"-b", avCpu, "-m", "none", "--", execDir, "@@")
-	(*cmd).Stdout = os.Stdout
-	err := (*cmd).Start()
+	screenCmd := exec.Command("screen", "-dmS", targetName+"-"+currentTime)
+	err := screenCmd.Run()
 	if err != nil {
 		return err
 	}
 
-	go func() {
-		finish <- (*cmd).Wait()
-	}()
+	aflCmdString := AFLDir + "/afl-fuzz -i " + inputDir + " -o " + outputDir + " -b " + avCpu + " -m none -- " + execDir + " @@"
+	screenExecCmd := exec.Command("screen", "-S", targetName+"-"+currentTime, "-X", "stuff", "bash -c \""+aflCmdString+"\"\n")
+
+	// *cmd = exec.CommandContext(*ctx, AFLDir+"/afl-fuzz", "-i", inputDir, "-o", outputDir,
+	// 	"-b", avCpu, "-m", "none", "--", execDir, "@@")
+	err = screenExecCmd.Run()
+	if err != nil {
+		return err
+	}
+
+	// go func() {
+	// 	finish <- (*cmd).Wait()
+	// }()
 
 	return nil
 }
@@ -171,6 +178,7 @@ type FileUploadFormData struct {
 }
 
 func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
+	var mutex sync.Mutex
 	apiGroup.POST("/runAFLPlusPlus", func(c *gin.Context) {
 		formData := &FileUploadFormData{}
 		if err := c.ShouldBind(formData); err != nil {
@@ -185,17 +193,13 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 		// Set up target dir and save c code
 		setUpTargetDir(workDir, targetDir, targetName, formData.File, c)
 
-		// Set 3 min timeout
-		// ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cancel()
-
 		// MakeFile
 		err := makeFile(AFLDir, targetDir, targetName)
 		if err != nil {
 			errReturn(c, err, "makefile error")
 			return
 		}
+		log.Println("[*] Make: make" + targetName + ".c success")
 
 		// Create Test dir
 		currentTime := time.Now().Format("20060102_150405")
@@ -205,6 +209,8 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 			return
 		}
 
+		// afl-gotcpu cannot run in same time
+		mutex.Lock()
 		// Get available cpu
 		avCpu, err := getAvailableCpu(AFLDir)
 		if err != nil {
@@ -212,47 +218,42 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 			return
 		}
 		if avCpu == "-1" {
-			c.JSON(http.StatusNotFound, gin.H{
-				"message": "no available cpu",
-			})
+			c.JSON(http.StatusNotFound, gin.H{"message": "no available cpu"})
 			return
 		}
 
 		// Run fuzzer
-		var cmd *exec.Cmd
-		finish := make(chan error, 1)
-		err = runFuzzer(targetDir, targetName, currentTime, AFLDir, avCpu, &cmd, &ctx, finish)
+		err = runFuzzer(targetDir, targetName, currentTime, AFLDir, avCpu)
 		if err != nil {
-			errReturn(c, err, "run fuzzer error")
+			errReturn(c, err, "Run fuzzer error")
 			return
 		}
+		log.Println("[*] Fuzzing: fuzzing " + targetName + ".c ...")
+		log.Println("[*] Remote Screen: screen -r " + targetName + "-" + currentTime)
 
-		select {
+		// Set 3 min timeout
+		// ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+
+		time.Sleep(3 * time.Second)
+		mutex.Unlock()
+
 		// Timeout(3mins)
-		case <-ctx.Done():
-			if ctx.Err() == context.DeadlineExceeded {
-				cmd.Process.Kill()
-				if checkCrash(targetDir, currentTime) {
-					c.JSON(200, gin.H{
-						"message": targetName + ".c : Crash Found",
-					})
-					return
-				}
-				c.JSON(200, gin.H{
-					"message": targetName + ".c : Crash Not Found",
-					// "message": "After 3 Minutes, kill the process",
-				})
-				return
-			}
-		// Finish the process
-		case err = <-finish:
+		<-ctx.Done()
+		if ctx.Err() == context.DeadlineExceeded {
+			killScreenCmd := exec.Command("screen", "-S", targetName+"-"+currentTime, "-X", "quit")
+			err = killScreenCmd.Run()
 			if err != nil {
-				errReturn(c, err, "exec target fail")
+				errReturn(c, err, "Kill screen error")
 				return
 			}
-			c.JSON(200, gin.H{
-				"message": "finish the task",
-			})
+
+			if checkCrash(targetDir, currentTime) {
+				c.JSON(http.StatusOK, gin.H{"message": targetName + ".c : Crash Found"})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"message": targetName + ".c : Crash Not Found"})
 			return
 		}
 
