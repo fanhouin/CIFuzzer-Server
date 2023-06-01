@@ -6,6 +6,7 @@ COPY . /app
 RUN apt-get update -y \ 
     && apt-get install vim -y \ 
     && apt-get install wget -y \
+    && apt-get install screen -y \
     && apt-get install -y unzip \
     && apt-get install -y build-essential python3-dev automake cmake git flex bison libglib2.0-dev libpixman-1-dev python3-setuptools cargo libgtk-3-dev \
     && apt-get install -y lld-12 llvm-12 llvm-12-dev clang-12 || apt-get install -y lld llvm llvm-dev clang \
