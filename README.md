@@ -5,6 +5,10 @@
 ### Prerequisites
 
 ```bash
+# Need to use "screen" to display each task of fuzzing
+sudo apt update
+sudo apt install screen
+
 golang ver 1.18
 AFL++
 ```
@@ -26,6 +30,8 @@ go run CIServer.go
 ### Test API Server
 
 ```bash
+# Need to prepare your c file,
+# See CIServer_test.go and change path
 go test
 ```
 
