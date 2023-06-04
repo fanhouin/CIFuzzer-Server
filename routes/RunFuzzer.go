@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"errors"
 	"io/ioutil"
 	"log"
 	"mime/multipart"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -126,6 +128,23 @@ func getAvailableCpu(AFLDir string) (string, error) {
 	return "-1", nil
 }
 
+func getQueueCPU(mutex *sync.Mutex, cpuQueue *[]int) (int, error) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(*cpuQueue) == 0 {
+		return -1, errors.New("no available cpu")
+	}
+	avCPU := (*cpuQueue)[0]
+	*cpuQueue = (*cpuQueue)[1:]
+	return avCPU, nil
+}
+
+func addQueueCPU(mutex *sync.Mutex, cpuQueue *[]int, cpu int) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	*cpuQueue = append(*cpuQueue, cpu)
+}
+
 func checkCrash(targetDir, currentTime string) bool {
 	files, err := ioutil.ReadDir(filepath.Join(targetDir, "test", currentTime, "out", "default", "crashes"))
 	if err != nil {
@@ -179,22 +198,36 @@ type FileUploadFormData struct {
 
 func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 	var mutex sync.Mutex
+	var cpuQueue []int
+	for i := 0; i < 16; i++ {
+		cpuQueue = append(cpuQueue, i)
+	}
+
 	apiGroup.POST("/runAFLPlusPlus", func(c *gin.Context) {
 		formData := &FileUploadFormData{}
 		if err := c.ShouldBind(formData); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 			return
 		}
-
 		targetName := strings.Split(formData.File.Filename, ".")[0]
 		targetDir := filepath.Join(workDir, "target", targetName)
 		AFLDir := filepath.Join(workDir, "AFLplusplus")
 
-		// Set up target dir and save c code
+		// Get available cpu
+		avCPU, err := getQueueCPU(&mutex, &cpuQueue)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"message": err.Error()})
+			return
+		}
+		log.Println("[*] ALL Available CPU: ", cpuQueue)
+		// Add cpu back to queue when finish the request
+		defer addQueueCPU(&mutex, &cpuQueue, avCPU)
+
+		// Setup target dir and save c code
 		setUpTargetDir(workDir, targetDir, targetName, formData.File, c)
 
 		// MakeFile
-		err := makeFile(AFLDir, targetDir, targetName)
+		err = makeFile(AFLDir, targetDir, targetName)
 		if err != nil {
 			errReturn(c, err, "makefile error")
 			return
@@ -209,21 +242,19 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 			return
 		}
 
-		// afl-gotcpu cannot run in same time
-		mutex.Lock()
 		// Get available cpu
-		avCpu, err := getAvailableCpu(AFLDir)
-		if err != nil {
-			errReturn(c, err, "get available cpu error")
-			return
-		}
-		if avCpu == "-1" {
-			c.JSON(http.StatusNotFound, gin.H{"message": "no available cpu"})
-			return
-		}
+		// avCpu, err := getAvailableCpu(AFLDir)
+		// if err != nil {
+		// 	errReturn(c, err, "get available cpu error")
+		// 	return
+		// }
+		// if avCpu == "-1" {
+		// 	c.JSON(http.StatusNotFound, gin.H{"message": "no available cpu"})
+		// 	return
+		// }
 
 		// Run fuzzer
-		err = runFuzzer(targetDir, targetName, currentTime, AFLDir, avCpu)
+		err = runFuzzer(targetDir, targetName, currentTime, AFLDir, strconv.Itoa(avCPU))
 		if err != nil {
 			errReturn(c, err, "Run fuzzer error")
 			return
@@ -236,12 +267,10 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 
-		time.Sleep(3 * time.Second)
-		mutex.Unlock()
-
 		// Timeout(3mins)
 		<-ctx.Done()
 		if ctx.Err() == context.DeadlineExceeded {
+			// Kill screen and AFL++ fuzzing
 			killScreenCmd := exec.Command("screen", "-S", targetName+"-"+currentTime, "-X", "quit")
 			err = killScreenCmd.Run()
 			if err != nil {
@@ -249,6 +278,7 @@ func RunFuzzer(apiGroup *gin.RouterGroup, workDir string) {
 				return
 			}
 
+			// Check crash files
 			if checkCrash(targetDir, currentTime) {
 				c.JSON(http.StatusOK, gin.H{"message": targetName + ".c : Crash Found"})
 				return

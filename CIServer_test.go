@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -67,7 +66,6 @@ func TestRunAFLPlusPlusCrashRoute(t *testing.T) {
 
 func TestRunAFLPlusPlusNotCrashRoute(t *testing.T) {
 	t.Parallel()
-	time.Sleep(5 * time.Second)
 	r := SetupRouter()
 
 	req := sendFileRequest("c_program/hello/src/hello.c")
